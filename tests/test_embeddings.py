@@ -1,13 +1,17 @@
 """Tests for the embeddings module."""
 
-from unittest.mock import patch
+import os
+from unittest.mock import MagicMock, patch
 
 from code_review_graph.embeddings import (
+    LOCAL_DEFAULT_MODEL,
     EmbeddingStore,
+    LocalEmbeddingProvider,
     _cosine_similarity,
     _decode_vector,
     _encode_vector,
     _node_to_text,
+    get_provider,
 )
 from code_review_graph.graph import GraphNode
 
@@ -133,3 +137,58 @@ class TestEmbeddingStore:
             # Should not raise even if node doesn't exist
             store.remove_node("nonexistent::func")
             store.close()
+
+
+class TestLocalEmbeddingProviderModelName:
+    """Tests for configurable model name on LocalEmbeddingProvider."""
+
+    def test_default_model_name(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CRG_EMBEDDING_MODEL", None)
+            provider = LocalEmbeddingProvider()
+            assert provider._model_name == LOCAL_DEFAULT_MODEL
+            assert provider.name == f"local:{LOCAL_DEFAULT_MODEL}"
+
+    def test_explicit_model_name(self):
+        with patch.dict(os.environ, {"CRG_EMBEDDING_MODEL": "should-be-ignored"}):
+            provider = LocalEmbeddingProvider(model_name="custom/model")
+            assert provider._model_name == "custom/model"
+            assert provider.name == "local:custom/model"
+
+    def test_env_var_fallback(self):
+        with patch.dict(os.environ, {"CRG_EMBEDDING_MODEL": "BAAI/bge-small-en-v1.5"}):
+            provider = LocalEmbeddingProvider()
+            assert provider._model_name == "BAAI/bge-small-en-v1.5"
+            assert provider.name == "local:BAAI/bge-small-en-v1.5"
+
+
+class TestGetProviderModel:
+    """Tests for model parameter in get_provider()."""
+
+    @patch("code_review_graph.embeddings.LocalEmbeddingProvider")
+    def test_local_passes_model(self, mock_cls):
+        mock_cls.return_value = MagicMock()
+        get_provider(provider=None, model="custom/model")
+        mock_cls.assert_called_once_with(model_name="custom/model")
+
+    @patch("code_review_graph.embeddings.LocalEmbeddingProvider")
+    def test_local_default_passes_none(self, mock_cls):
+        mock_cls.return_value = MagicMock()
+        get_provider(provider=None, model=None)
+        mock_cls.assert_called_once_with(model_name=None)
+
+
+class TestEmbeddingStoreModelPassthrough:
+    """Tests that EmbeddingStore passes model to get_provider."""
+
+    def test_model_forwarded_to_get_provider(self, tmp_path):
+        db = tmp_path / "embeddings.db"
+        with patch("code_review_graph.embeddings.get_provider", return_value=None) as mock_gp:
+            EmbeddingStore(db, model="custom/model").close()
+            mock_gp.assert_called_once_with(None, model="custom/model")
+
+    def test_provider_and_model_forwarded(self, tmp_path):
+        db = tmp_path / "embeddings.db"
+        with patch("code_review_graph.embeddings.get_provider", return_value=None) as mock_gp:
+            EmbeddingStore(db, provider="local", model="custom/model").close()
+            mock_gp.assert_called_once_with("local", model="custom/model")
